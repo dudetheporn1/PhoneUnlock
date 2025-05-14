@@ -1,0 +1,282 @@
+Dashboard
+Cody
+Prompts
+Public Code Search
+I need a hybrid model (Claude Opus/OpenAI o3)
+ 
+I need a hybrid model (Claude Opus/OpenAI o3)
+
+
+Context
+— none fetched
+Hybrid Model Implementation
+I'll create a hybrid model that can use both Claude Opus and OpenAI o3 models, with fallback capabilities.
+
+Setting Up the Environment
+First, let's create a basic project structure:
+
+mkdir hybrid-ai-model
+cd hybrid-ai-model
+
+npm init -y
+
+npm install openai @anthropic-ai/sdk dotenv express
+
+Let's create the environment variables file:
+
+touch .env
+
+Now let's create the necessary files:
+
+touch index.js hybrid-model.js
+
+Environment Variables
+Let's set up the environment variables:
+
+ANTHROPIC_API_KEY=your_anthropic_api_key
+OPENAI_API_KEY=your_openai_api_key
+PORT=3000
+
+.env
+Hybrid Model Implementation
+Let's create the hybrid model class:
+
+const { Anthropic } = require('@anthropic-ai/sdk');
+const OpenAI = require('openai');
+require('dotenv').config();
+
+class HybridModel {
+  constructor() {
+    this.anthropic = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+    });
+    
+    this.openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+    
+    this.primaryProvider = 'anthropic'; // Default primary provider
+  }
+
+  setPrimaryProvider(provider) {
+    if (provider !== 'anthropic' && provider !== 'openai') {
+      throw new Error('Provider must be either "anthropic" or "openai"');
+    }
+    this.primaryProvider = provider;
+    return this;
+  }
+
+  async generateResponse(prompt, options = {}) {
+    const {
+      maxTokens = 1000,
+      temperature = 0.7,
+      fallback = true,
+      timeout = 30000, // 30 seconds timeout
+    } = options;
+
+    // Try primary provider first
+    try {
+      if (this.primaryProvider === 'anthropic') {
+        return await this._generateWithAnthropic(prompt, maxTokens, temperature, timeout);
+      } else {
+        return await this._generateWithOpenAI(prompt, maxTokens, temperature, timeout);
+      }
+    } catch (error) {
+      console.error(`Error with ${this.primaryProvider}:`, error);
+      
+      // If fallback is enabled and there was an error, try the other provider
+      if (fallback) {
+        console.log(`Falling back to ${this.primaryProvider === 'anthropic' ? 'OpenAI' : 'Anthropic'}`);
+        try {
+          if (this.primaryProvider === 'anthropic') {
+            return await this._generateWithOpenAI(prompt, maxTokens, temperature, timeout);
+          } else {
+            return await this._generateWithAnthropic(prompt, maxTokens, temperature, timeout);
+          }
+        } catch (fallbackError) {
+          console.error(`Fallback error:`, fallbackError);
+          throw new Error('Both primary and fallback providers failed');
+        }
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  async _generateWithAnthropic(prompt, maxTokens, temperature, timeout) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    try {
+      const response = await this.anthropic.messages.create({
+        model: 'claude-3-opus-20240229',
+        max_tokens: maxTokens,
+        temperature: temperature,
+        messages: [{ role: 'user', content: prompt }],
+        signal: controller.signal,
+      });
+      
+      return {
+        text: response.content[0].text,
+        provider: 'anthropic',
+        model: 'claude-3-opus-20240229',
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  async _generateWithOpenAI(prompt, maxTokens, temperature, timeout) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    try {
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4o',
+        max_tokens: maxTokens,
+        temperature: temperature,
+        messages: [{ role: 'user', content: prompt }],
+        signal: controller.signal,
+      });
+      
+      return {
+        text: response.choices[0].message.content,
+        provider: 'openai',
+        model: 'gpt-4o',
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  // Method to run both models and compare results
+  async compareResponses(prompt, options = {}) {
+    const {
+      maxTokens = 1000,
+      temperature = 0.7,
+      timeout = 30000,
+    } = options;
+
+    try {
+      const [anthropicResponse, openaiResponse] = await Promise.all([
+        this._generateWithAnthropic(prompt, maxTokens, temperature, timeout).catch(err => ({ error: err.message })),
+        this._generateWithOpenAI(prompt, maxTokens, temperature, timeout).catch(err => ({ error: err.message }))
+      ]);
+
+      return {
+        anthropic: anthropicResponse,
+        openai: openaiResponse,
+        prompt
+      };
+    } catch (error) {
+      console.error('Error comparing responses:', error);
+      throw error;
+    }
+  }
+}
+
+module.exports = HybridModel;
+
+hybrid-model.js
+API Server Implementation
+Now let's create a simple API server to use our hybrid model:
+
+const express = require('express');
+const HybridModel = require('./hybrid-model');
+require('dotenv').config();
+
+const app = express();
+app.use(express.json());
+
+const hybridModel = new HybridModel();
+
+app.post('/generate', async (req, res) => {
+  try {
+    const { prompt, provider, maxTokens, temperature, fallback, timeout } = req.body;
+    
+    if (!prompt) {
+      return res.status(400).json({ error: 'Prompt is required' });
+    }
+    
+    if (provider) {
+      hybridModel.setPrimaryProvider(provider);
+    }
+    
+    const response = await hybridModel.generateResponse(prompt, {
+      maxTokens,
+      temperature,
+      fallback,
+      timeout
+    });
+    
+    res.json(response);
+  } catch (error) {
+    console.error('Error generating response:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/compare', async (req, res) => {
+  try {
+    const { prompt, maxTokens, temperature, timeout } = req.body;
+    
+    if (!prompt) {
+      return res.status(400).json({ error: 'Prompt is required' });
+    }
+    
+    const response = await hybridModel.compareResponses(prompt, {
+      maxTokens,
+      temperature,
+      timeout
+    });
+    
+    res.json(response);
+  } catch (error) {
+    console.error('Error comparing responses:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Hybrid AI model server running on port ${PORT}`);
+});
+
+index.js
+Usage Examples
+To start the server:
+
+node index.js
+
+Example API Requests
+Generate a response using the default provider (Claude Opus):
+curl -X POST http://localhost:3000/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Explain quantum computing in simple terms"}'
+
+Generate a response using OpenAI as the primary provider:
+curl -X POST http://localhost:3000/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Explain quantum computing in simple terms", "provider": "openai"}'
+
+Compare responses from both models:
+curl -X POST http://localhost:3000/compare \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Explain quantum computing in simple terms"}'
+
+This implementation provides a flexible hybrid model that can:
+
+Use either Claude Opus or GPT-4o as the primary model
+Automatically fall back to the other model if the primary one fails
+Compare responses from both models side by side
+Configure parameters like max tokens, temperature, and timeout
+You can extend this implementation with additional features like:
+
+Response caching
+Rate limiting
+More sophisticated fallback strategies
+Streaming responses
+Model selection based on prompt content or other criteria
+
+
+Skip to end
